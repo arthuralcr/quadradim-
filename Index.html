@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Quadradim — Fuga no Espaço</title>
+  <style>
+    :root { --bg:#0b1020; --fg:#f5f7ff; --accent:#8cf; --danger:#f66; --ok:#9f6; }
+    * { box-sizing:border-box; }
+    html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:system-ui,Segoe UI,Roboto,Arial; }
+    .wrap { display:flex; min-height:100%; align-items:center; justify-content:center; padding:12px; }
+    canvas { background: radial-gradient(120% 120% at 50% 0%, #0e1733, #070b18 70%); width: min(96vw, 480px); height: calc(min(96vw, 480px)*1.6); max-height: 90vh; border-radius:16px; box-shadow:0 10px 40px rgba(0,0,0,.5); touch-action:none; }
+    .hud { position:fixed; inset:auto 0 12px 0; display:flex; justify-content:center; pointer-events:none; }
+    .row { width:min(96vw,480px); display:flex; gap:8px; justify-content:space-between; }
+    .btn { pointer-events:auto; border:none; border-radius:12px; padding:10px 14px; background:#111829; color:var(--fg); font-weight:600; box-shadow:0 4px 16px rgba(0,0,0,.35); }
+    .btn:active { transform:translateY(1px); }
+    .dpad { display:flex; gap:8px; }
+    .dpad .btn { width:56px; }
+    .hidden { display:none; }
+    .toast { position:fixed; top:10px; left:50%; transform:translateX(-50%); background:#111829; padding:6px 10px; border-radius:10px; font-size:12px; opacity:.85; }
+    a { color: var(--accent); text-decoration:none; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" width="480" height="768" aria-label="Quadradim — Fuga no Espaço"></canvas>
+  </div>
+
+  <div class="hud" aria-hidden="false">
+    <div class="row">
+      <div class="dpad">
+        <button class="btn" id="left" aria-label="Esquerda">◀</button>
+        <button class="btn" id="up" aria-label="Cima">▲</button>
+        <button class="btn" id="down" aria-label="Baixo">▼</button>
+        <button class="btn" id="right" aria-label="Direita">▶</button>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn" id="pause" aria-label="Pausar/Retomar">⏯ Pausa</button>
+        <button class="btn" id="restart" aria-label="Reiniciar">⟲ Reiniciar</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="hint">Teclas: WASD/Setas • P: Pausa • R: Reiniciar</div>
+
+  <script>
+  (()=>{
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    // Escala para telas retina e manter proporção
+    function fitCanvas(){
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio||1));
+      const w = 480, h = 768; // base lógica
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = w+'px';
+      canvas.style.height = h+'px';
+      ctx.setTransform(dpr,0,0,dpr,0,0);
+    }
+    fitCanvas();
+    addEventListener('resize', fitCanvas);
+
+    // Estado do jogo
+    const STATE = { MENU:0, PLAY:1, PAUSE:2, GAMEOVER:3, WIN:4 };
+    let state = STATE.MENU;
+
+    const world = { w:480, h:768 };
+    const player = { x:240-16, y:600, w:32, h:32, s:260 };
+    const meteors = [];
+    const stars = [];
+    let timeLeft = 120; // segundos
+    let starsGot = 0;
+
+    // Timers
+    let last = performance.now();
+    let spawnTimer = 0;
+    let starTimer = 0;
+
+    // Input teclado
+    const keys = { left:false, right:false, up:false, down:false };
+    addEventListener('keydown', e=>{
+      if(['ArrowLeft','a','A'].includes(e.key)) keys.left = true;
+      if(['ArrowRight','d','D'].includes(e.key)) keys.right = true;
+      if(['ArrowUp','w','W'].includes(e.key)) keys.up = true;
+      if(['ArrowDown','s','S'].includes(e.key)) keys.down = true;
+      if(e.key==='p' || e.key==='P') togglePause();
+      if(e.key==='r' || e.key==='R') resetGame();
+      if(state===STATE.MENU && (e.key===' '||e.key==='Enter')) state=STATE.PLAY;
+    });
+    addEventListener('keyup', e=>{
+      if(['ArrowLeft','a','A'].includes(e.key)) keys.left = false;
+      if(['ArrowRight','d','D'].includes(e.key)) keys.right = false;
+      if(['ArrowUp','w','W'].includes(e.key)) keys.up = false;
+      if(['ArrowDown','s','S'].includes(e.key)) keys.down = false;
+    });
+
+    // Input toque (botões)
+    function hold(btn, on, off){
+      btn.addEventListener('touchstart', e=>{ e.preventDefault(); on(); });
+      btn.addEventListener('touchend', e=>{ e.preventDefault(); off(); });
+      btn.addEventListener('mousedown', on);
+      btn.addEventListener('mouseup', off);
+      btn.addEventListener('mouseleave', off);
+    }
+    hold(document.getElementById('left'), ()=>keys.left=true, ()=>keys.left=false);
+    hold(document.getElementById('right'), ()=>keys.right=true, ()=>keys.right=false);
+    hold(document.getElementById('up'), ()=>keys.up=true, ()=>keys.up=false);
+    hold(document.getElementById('down'), ()=>keys.down=true, ()=>keys.down=false);
+
+    document.getElementById('pause').onclick = ()=>togglePause();
+    document.getElementById('restart').onclick = ()=>resetGame();
+
+    function togglePause(){
+      if(state===STATE.PLAY){ state=STATE.PAUSE; }
+      else if(state===STATE.PAUSE){ state=STATE.PLAY; last=performance.now(); }
+    }
+    function resetGame(){
+      meteors.length=0; stars.length=0;
+      player.x=240-16; player.y=600; timeLeft=120; starsGot=0;
+      state=STATE.MENU;
+    }
+
+    // Utilitários
+    const rand = (a,b)=> a + Math.random()*(b-a);
+    const clamp=(v,a,b)=> Math.max(a, Math.min(b, v));
+
+    function rect(x,y,w,h, c){ ctx.fillStyle=c; ctx.fillRect(x,y,w,h); }
+    function outline(x,y,w,h, c){ ctx.strokeStyle=c; ctx.lineWidth=2; ctx.strokeRect(x,y,w,h); }
+
+    function checkCollision(a,b){
+      return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    // Spawns
+    function spawnMeteor(){
+      const w = rand(24, 72);
+      meteors.push({ x: rand(0, world.w - w), y: -80, w, h: rand(18, 28), vy: rand(120, 260) });
+    }
+    function spawnStar(){
+      stars.push({ x: rand(20, world.w-20-16), y: -20, w:16, h:16, vy: rand(90, 140) });
+    }
+
+    // Atualizações
+    function update(dt){
+      if(state!==STATE.PLAY) return;
+      // Tempo
+      timeLeft -= dt; if(timeLeft<=0){ state=STATE.WIN; }
+
+      // Jogador
+      let vx = (keys.right?1:0) - (keys.left?1:0);
+      let vy = (keys.down?1:0) - (keys.up?1:0);
+      const len = Math.hypot(vx,vy) || 1; vx/=len; vy/=len;
+      player.x = clamp(player.x + vx*player.s*dt, 0, world.w - player.w);
+      player.y = clamp(player.y + vy*player.s*dt, 0, world.h - player.h);
+
+      // Spawns
+      spawnTimer -= dt; if(spawnTimer<=0){ spawnMeteor(); spawnTimer = rand(0.3, 0.75); }
+      starTimer -= dt; if(starTimer<=0){ spawnStar(); starTimer = rand(2.5, 4.5); }
+
+      // Meteoros
+      for(let i=meteors.length-1;i>=0;i--){
+        const m = meteors[i]; m.y += m.vy*dt; if(m.y>world.h+40) meteors.splice(i,1);
+        if(checkCollision(player, m)) { state=STATE.GAMEOVER; break; }
+      }
+      // Estrelas
+      for(let i=stars.length-1;i>=0;i--){
+        const s = stars[i]; s.y += s.vy*dt; if(s.y>world.h+20) stars.splice(i,1);
+        if(checkCollision(player, s)) { stars.splice(i,1); starsGot++; if(starsGot>=10){ state=STATE.WIN; } }
+      }
+    }
+
+    // Desenho
+    function draw(){
+      // Fundo estrelado simples
+      ctx.clearRect(0,0,world.w,world.h);
+      for(let i=0;i<40;i++){
+        const x = (i*97 % world.w);
+        const y = (i*53 % world.h);
+        ctx.globalAlpha = 0.15 + (i%5)*0.1; rect(x,y,2,2,'#fff'); ctx.globalAlpha=1;
+      }
+
+      // Player
+      rect(player.x, player.y, player.w, player.h, '#8cf'); outline(player.x, player.y, player.w, player.h, '#dff');
+
+      // Meteoros
+      meteors.forEach(m=>{ rect(m.x, m.y, m.w, m.h, '#f44'); outline(m.x, m.y, m.w, m.h, '#fff2'); });
+
+      // Estrelas
+      stars.forEach(s=>{ rect(s.x, s.y, s.w, s.h, '#ffeb3b'); outline(s.x, s.y, s.w, s.h, '#fff8'); });
+
+      drawHUD(ctx);
+
+      if(state===STATE.MENU){ drawBanner('Toque/Enter para começar'); }
+      if(state===STATE.PAUSE){ drawBanner('Pausado'); }
+      if(state===STATE.GAMEOVER){ drawBanner('Game Over — R para reiniciar'); }
+      if(state===STATE.WIN){ drawBanner('Vitória! — R para reiniciar'); }
+    }
+
+    function drawHUD(){
+      // Top HUD
+      const pad=12;
+      const barW = world.w - pad*2;
+      // Tempo
+      const t = Math.max(0, timeLeft);
+      const m = Math.floor(t/60); const s = Math.floor(t%60).toString().padStart(2,'0');
+      ctx.fillStyle = '#ffffffcc';
+      ctx.font = '16px system-ui';
+      ctx.fillText(`Tempo: ${m}:${s}`, pad, 22);
+      ctx.fillText(`Estrelas: ${starsGot}/10`, world.w - 130, 22);
+      // Linha topo
+      ctx.globalAlpha=.2; rect(pad,28,barW,2,'#fff'); ctx.globalAlpha=1;
+    }
+
+    function drawBanner(text){
+      ctx.save();
+      ctx.fillStyle = '#000a';
+      const bw = world.w*0.8, bh = 120;
+      const bx = (world.w-bw)/2, by = (world.h-bh)/2;
+      rect(bx,by,bw,bh,'#0008');
+      ctx.strokeStyle = '#8cf'; ctx.lineWidth=2; ctx.strokeRect(bx+0.5,by+0.5,bw-1,bh-1);
+      ctx.fillStyle = '#fff';
+      ctx.font = '700 22px system-ui';
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(text, world.w/2, world.h/2);
+      ctx.restore();
+    }
+
+    // Loop principal
+    function loop(now){
+      requestAnimationFrame(loop);
+      let dt = (now - last)/1000; last = now;
+      if(dt>0.05) dt=0.016; // evitar saltos
+      if(state===STATE.PLAY) update(dt);
+      draw();
+    }
+    requestAnimationFrame(loop);
+
+    // Interações no canvas para começar rapidamente no mobile
+    canvas.addEventListener('pointerdown', ()=>{ if(state===STATE.MENU) state=STATE.PLAY; });
+
+    // Ocultar dica após alguns segundos
+    setTimeout(()=>{ document.getElementById('hint').classList.add('hidden'); }, 5000);
+  })();
+  </script>
+</body>
+</html>
